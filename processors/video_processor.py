@@ -122,6 +122,150 @@ class VideoProcessor:
         except subprocess.SubprocessError as e:
             raise Exception(f"Ошибка при получении метаданных видео: {str(e)}")
 
+    def _compress_video(self, input_path: str, output_path: str, quality: str) -> str:
+        """Сжатие видео файла"""
+        try:
+            # Получаем путь к FFmpeg
+            ffmpeg_path = self._get_ffmpeg_path()
+            if not ffmpeg_path:
+                raise Exception("FFmpeg не найден в системе")
+
+            # Получаем информацию о видео через ffprobe
+            probe_cmd = [
+                self.ffprobe_path,
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_streams",
+                input_path,
+            ]
+
+            probe_result = subprocess.run(
+                probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
+            )
+
+            video_info = json.loads(probe_result.stdout)
+            video_stream = next(
+                s for s in video_info["streams"] if s["codec_type"] == "video"
+            )
+            width = int(video_stream["width"])
+            height = int(video_stream["height"])
+
+            # Определяем параметры сжатия в зависимости от качества
+            quality_settings = {
+                "Высокое": {
+                    "crf": 23,
+                    "preset": "medium",
+                    "scale": "iw*min(1920/iw\,1):ih*min(1080/ih\,1):force_original_aspect_ratio=decrease",
+                    "audio_bitrate": "192k",
+                    "threads": "0",  # Автоматический выбор количества потоков
+                },
+                "Среднее": {
+                    "crf": 28,
+                    "preset": "faster",
+                    "scale": "iw*min(1280/iw\,1):ih*min(720/ih\,1):force_original_aspect_ratio=decrease",
+                    "audio_bitrate": "128k",
+                    "threads": "0",
+                },
+                "Низкое": {
+                    "crf": 33,
+                    "preset": "veryfast",
+                    "scale": "iw*min(854/iw\,1):ih*min(480/ih\,1):force_original_aspect_ratio=decrease",
+                    "audio_bitrate": "96k",
+                    "threads": "0",
+                },
+            }
+
+            settings = quality_settings[quality]
+
+            # Формируем базовую команду FFmpeg
+            cmd = [
+                ffmpeg_path,
+                "-i",
+                input_path,
+                "-c:v",
+                "libx264",
+                "-crf",
+                str(settings["crf"]),
+                "-preset",
+                settings["preset"],
+                "-vf",
+                settings["scale"],
+                "-c:a",
+                "aac",
+                "-b:a",
+                settings["audio_bitrate"],
+                "-threads",
+                settings["threads"],
+                "-y",  # Перезаписать существующий файл
+                output_path,
+            ]
+
+            # Автоматически определяем и используем доступное аппаратное ускорение
+            try:
+                # Проверяем доступные аппаратные ускорители
+                hw_accels = self._get_available_hw_accels()
+
+                if hw_accels:
+                    # Используем первый доступный ускоритель
+                    hw_accel = hw_accels[0]
+                    if hw_accel == "videotoolbox":
+                        cmd.insert(1, "-hwaccel")
+                        cmd.insert(2, "videotoolbox")
+                        cmd.insert(3, "-c:v")
+                        cmd.insert(4, "h264_videotoolbox")
+                    elif hw_accel == "cuda":
+                        cmd.insert(1, "-hwaccel")
+                        cmd.insert(2, "cuda")
+                        cmd.insert(3, "-c:v")
+                        cmd.insert(4, "h264_nvenc")
+                    elif hw_accel == "qsv":
+                        cmd.insert(1, "-hwaccel")
+                        cmd.insert(2, "qsv")
+                        cmd.insert(3, "-c:v")
+                        cmd.insert(4, "h264_qsv")
+            except Exception as e:
+                logger.warning(
+                    f"Не удалось использовать аппаратное ускорение: {str(e)}"
+                )
+
+            # Запускаем процесс сжатия
+            process = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
+            )
+
+            return output_path
+
+        except Exception as e:
+            logger.error(f"Ошибка при сжатии видео: {str(e)}")
+            raise
+
+    def _get_available_hw_accels(self) -> list:
+        """Получает список доступных аппаратных ускорителей"""
+        try:
+            result = subprocess.run(
+                [self.ffmpeg_path, "-hide_banner", "-hwaccels"],
+                capture_output=True,
+                text=True,
+            )
+
+            available_accels = []
+            output = result.stdout.lower()
+
+            # Проверяем поддержку различных ускорителей
+            if "videotoolbox" in output:
+                available_accels.append("videotoolbox")
+            if "cuda" in output:
+                available_accels.append("cuda")
+            if "qsv" in output:
+                available_accels.append("qsv")
+
+            return available_accels
+        except Exception as e:
+            logger.warning(f"Ошибка при определении аппаратных ускорителей: {str(e)}")
+            return []
+
     def compress_video(self, video_path, output_dir, quality_level):
         """
         Сжатие видео с сохранением метаданных

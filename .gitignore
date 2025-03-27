@@ -1,0 +1,47 @@
+# Виртуальное окружение
+venv/
+env/
+.env/
+
+# Скомпилированные файлы Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Дистрибутивы
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Временные файлы
+.cache/
+.pytest_cache/
+*.log
+*.swp
+.DS_Store
+
+# Файлы PyInstaller
+*.spec
+
+# Файлы покрытия кода
+.coverage
+htmlcov/
+
+# Файлы локальной конфигурации
+instance/
+.env
+
+# Директория с FFmpeg бинарными файлами
+bin/
+
+# Собранные файлы
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.sublime-* 

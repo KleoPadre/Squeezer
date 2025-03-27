@@ -8,6 +8,9 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class VideoProcessor:
@@ -16,9 +19,46 @@ class VideoProcessor:
     def __init__(self):
         # Соответствие уровней качества для сжатия видео
         self.quality_map = {
-            "Высокое": {"crf": "23", "preset": "medium"},
-            "Среднее": {"crf": "26", "preset": "medium"},
-            "Низкое": {"crf": "28", "preset": "fast"},
+            "Максимальное": {
+                "crf": 18,  # Высококачественное сжатие с небольшим уменьшением размера
+                "preset": "slow",  # Более медленный пресет для лучшего качества
+                "scale": "iw:ih",  # Сохраняем оригинальное разрешение
+                "audio_bitrate": "320k",  # Высокий битрейт для аудио
+                "threads": "0",
+                "profile": "high",
+                "level": "4.2",
+                "x264opts": "ref=5:me=umh:subme=8:trellis=1:rc-lookahead=60:deblock=0:0:psy-rd=0.8,0.1",
+            },
+            "Высокое": {
+                "crf": 20,  # Улучшенное качество для высокого уровня
+                "preset": "medium",
+                "scale": "iw*min(1920/iw\,1):ih*min(1080/ih\,1):force_original_aspect_ratio=decrease",
+                "audio_bitrate": "256k",
+                "threads": "0",
+                "profile": "high",
+                "level": "4.1",
+                "x264opts": "ref=4:me=hex:subme=7:trellis=1:rc-lookahead=50:deblock=1,1:psy-rd=0.8,0.1",
+            },
+            "Среднее": {
+                "crf": 23,  # Улучшенное качество для среднего уровня
+                "preset": "faster",
+                "scale": "iw*min(1280/iw\,1):ih*min(720/ih\,1):force_original_aspect_ratio=decrease",
+                "audio_bitrate": "192k",
+                "threads": "0",
+                "profile": "high",
+                "level": "4.0",
+                "x264opts": "ref=3:me=hex:subme=6:trellis=1:rc-lookahead=40:deblock=1,1:psy-rd=0.6,0.1",
+            },
+            "Низкое": {
+                "crf": 26,  # Улучшенное качество для низкого уровня
+                "preset": "veryfast",
+                "scale": "iw*min(854/iw\,1):ih*min(480/ih\,1):force_original_aspect_ratio=decrease",
+                "audio_bitrate": "128k",
+                "threads": "0",
+                "profile": "main",
+                "level": "3.1",
+                "x264opts": "ref=2:me=dia:subme=4:trellis=0:rc-lookahead=30:deblock=1,1:psy-rd=0.4,0.0",
+            },
         }
 
         # Поддерживаемые форматы
@@ -32,42 +72,52 @@ class VideoProcessor:
         """Получение абсолютного пути к ресурсу"""
         if hasattr(sys, "_MEIPASS"):
             # PyInstaller создает временную папку и хранит путь в _MEIPASS
-            return os.path.join(sys._MEIPASS, relative_path)
+            path = os.path.join(sys._MEIPASS, relative_path)
+            logger.info(f"Путь к ресурсу (PyInstaller): {path}")
+            return path
 
         # Если запускается не из бинарника, используем текущий путь
         base_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
-        return os.path.join(base_path, relative_path)
+        path = os.path.join(base_path, relative_path)
+        logger.info(f"Путь к ресурсу (обычный): {path}")
+        return path
 
     def _get_ffmpeg_path(self):
         """Получение пути к исполняемому файлу FFmpeg"""
         # Проверяем встроенный FFmpeg
         embedded_ffmpeg = self._get_resource_path(os.path.join("bin", "ffmpeg"))
+        logger.info(f"Проверяем встроенный FFmpeg: {embedded_ffmpeg}")
         if os.path.exists(embedded_ffmpeg):
             # Делаем файл исполняемым, если он еще не исполняемый
             if not os.access(embedded_ffmpeg, os.X_OK):
                 try:
                     os.chmod(embedded_ffmpeg, 0o755)
-                except Exception:
-                    pass
+                    logger.info("Установлены права на выполнение для FFmpeg")
+                except Exception as e:
+                    logger.error(f"Ошибка при установке прав на выполнение: {str(e)}")
             return embedded_ffmpeg
 
         # Если встроенного нет, пытаемся использовать системный
+        logger.info("Встроенный FFmpeg не найден, используем системный")
         return "ffmpeg"
 
     def _get_ffprobe_path(self):
         """Получение пути к исполняемому файлу FFprobe"""
         # Проверяем встроенный FFprobe
         embedded_ffprobe = self._get_resource_path(os.path.join("bin", "ffprobe"))
+        logger.info(f"Проверяем встроенный FFprobe: {embedded_ffprobe}")
         if os.path.exists(embedded_ffprobe):
             # Делаем файл исполняемым, если он еще не исполняемый
             if not os.access(embedded_ffprobe, os.X_OK):
                 try:
                     os.chmod(embedded_ffprobe, 0o755)
-                except Exception:
-                    pass
+                    logger.info("Установлены права на выполнение для FFprobe")
+                except Exception as e:
+                    logger.error(f"Ошибка при установке прав на выполнение: {str(e)}")
             return embedded_ffprobe
 
         # Если встроенного нет, пытаемся использовать системный
+        logger.info("Встроенный FFprobe не найден, используем системный")
         return "ffprobe"
 
     def can_process(self, file_path):
@@ -122,128 +172,12 @@ class VideoProcessor:
         except subprocess.SubprocessError as e:
             raise Exception(f"Ошибка при получении метаданных видео: {str(e)}")
 
-    def _compress_video(self, input_path: str, output_path: str, quality: str) -> str:
-        """Сжатие видео файла"""
-        try:
-            # Получаем путь к FFmpeg
-            ffmpeg_path = self._get_ffmpeg_path()
-            if not ffmpeg_path:
-                raise Exception("FFmpeg не найден в системе")
-
-            # Получаем информацию о видео через ffprobe
-            probe_cmd = [
-                self.ffprobe_path,
-                "-v",
-                "quiet",
-                "-print_format",
-                "json",
-                "-show_streams",
-                input_path,
-            ]
-
-            probe_result = subprocess.run(
-                probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
-            )
-
-            video_info = json.loads(probe_result.stdout)
-            video_stream = next(
-                s for s in video_info["streams"] if s["codec_type"] == "video"
-            )
-            width = int(video_stream["width"])
-            height = int(video_stream["height"])
-
-            # Определяем параметры сжатия в зависимости от качества
-            quality_settings = {
-                "Высокое": {
-                    "crf": 23,
-                    "preset": "medium",
-                    "scale": "iw*min(1920/iw\,1):ih*min(1080/ih\,1):force_original_aspect_ratio=decrease",
-                    "audio_bitrate": "192k",
-                    "threads": "0",  # Автоматический выбор количества потоков
-                },
-                "Среднее": {
-                    "crf": 28,
-                    "preset": "faster",
-                    "scale": "iw*min(1280/iw\,1):ih*min(720/ih\,1):force_original_aspect_ratio=decrease",
-                    "audio_bitrate": "128k",
-                    "threads": "0",
-                },
-                "Низкое": {
-                    "crf": 33,
-                    "preset": "veryfast",
-                    "scale": "iw*min(854/iw\,1):ih*min(480/ih\,1):force_original_aspect_ratio=decrease",
-                    "audio_bitrate": "96k",
-                    "threads": "0",
-                },
-            }
-
-            settings = quality_settings[quality]
-
-            # Формируем базовую команду FFmpeg
-            cmd = [
-                ffmpeg_path,
-                "-i",
-                input_path,
-                "-c:v",
-                "libx264",
-                "-crf",
-                str(settings["crf"]),
-                "-preset",
-                settings["preset"],
-                "-vf",
-                settings["scale"],
-                "-c:a",
-                "aac",
-                "-b:a",
-                settings["audio_bitrate"],
-                "-threads",
-                settings["threads"],
-                "-y",  # Перезаписать существующий файл
-                output_path,
-            ]
-
-            # Автоматически определяем и используем доступное аппаратное ускорение
-            try:
-                # Проверяем доступные аппаратные ускорители
-                hw_accels = self._get_available_hw_accels()
-
-                if hw_accels:
-                    # Используем первый доступный ускоритель
-                    hw_accel = hw_accels[0]
-                    if hw_accel == "videotoolbox":
-                        cmd.insert(1, "-hwaccel")
-                        cmd.insert(2, "videotoolbox")
-                        cmd.insert(3, "-c:v")
-                        cmd.insert(4, "h264_videotoolbox")
-                    elif hw_accel == "cuda":
-                        cmd.insert(1, "-hwaccel")
-                        cmd.insert(2, "cuda")
-                        cmd.insert(3, "-c:v")
-                        cmd.insert(4, "h264_nvenc")
-                    elif hw_accel == "qsv":
-                        cmd.insert(1, "-hwaccel")
-                        cmd.insert(2, "qsv")
-                        cmd.insert(3, "-c:v")
-                        cmd.insert(4, "h264_qsv")
-            except Exception as e:
-                logger.warning(
-                    f"Не удалось использовать аппаратное ускорение: {str(e)}"
-                )
-
-            # Запускаем процесс сжатия
-            process = subprocess.run(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
-            )
-
-            return output_path
-
-        except Exception as e:
-            logger.error(f"Ошибка при сжатии видео: {str(e)}")
-            raise
-
     def _get_available_hw_accels(self) -> list:
         """Получает список доступных аппаратных ускорителей"""
         try:
+            logger.info(
+                f"Проверяем аппаратные ускорители с помощью FFmpeg: {self.ffmpeg_path}"
+            )
             result = subprocess.run(
                 [self.ffmpeg_path, "-hide_banner", "-hwaccels"],
                 capture_output=True,
@@ -252,18 +186,25 @@ class VideoProcessor:
 
             available_accels = []
             output = result.stdout.lower()
+            logger.info(f"Вывод команды -hwaccels: {output}")
 
             # Проверяем поддержку различных ускорителей
             if "videotoolbox" in output:
                 available_accels.append("videotoolbox")
+                logger.info("Найден ускоритель VideoToolbox")
             if "cuda" in output:
                 available_accels.append("cuda")
+                logger.info("Найден ускоритель CUDA")
             if "qsv" in output:
                 available_accels.append("qsv")
+                logger.info("Найден ускоритель QSV")
+
+            if not available_accels:
+                logger.warning("Аппаратные ускорители не найдены")
 
             return available_accels
         except Exception as e:
-            logger.warning(f"Ошибка при определении аппаратных ускорителей: {str(e)}")
+            logger.error(f"Ошибка при определении аппаратных ускорителей: {str(e)}")
             return []
 
     def compress_video(self, video_path, output_dir, quality_level):
@@ -273,7 +214,7 @@ class VideoProcessor:
         Args:
             video_path (str): Путь к исходному видео
             output_dir (str): Директория для сохранения сжатого видео
-            quality_level (str): Уровень качества (Высокое, Среднее, Низкое)
+            quality_level (str): Уровень качества (Максимальное, Высокое, Среднее, Низкое)
 
         Returns:
             str: Путь к сжатому видео
@@ -290,39 +231,55 @@ class VideoProcessor:
         output_name = os.path.splitext(file_name)[0] + ".mp4"
         output_path = os.path.join(output_dir, output_name)
 
-        # Получение настроек качества
-        quality = self.quality_map[quality_level]
-        crf = quality["crf"]
-        preset = quality["preset"]
+        # Получаем настройки качества
+        settings = self.quality_map[quality_level]
+        logger.info(f"Используем настройки качества: {quality_level}")
+
+        # Определяем настройки битрейта в зависимости от качества
+        bitrates = {
+            "Максимальное": "8M",
+            "Высокое": "6M",
+            "Среднее": "4M",
+            "Низкое": "2M",
+        }
+
+        bitrate = bitrates.get(quality_level, "4M")
 
         try:
-            # Получение метаданных для сохранения
-            metadata = self._get_video_metadata(video_path)
-
-            # Настройка команды FFmpeg для сжатия с сохранением метаданных
+            # Для всех уровней качества используем CRF
             cmd = [
                 self.ffmpeg_path,
                 "-i",
                 video_path,
                 "-c:v",
-                "libx264",  # H.264 кодек для видео
+                "libx264",
                 "-crf",
-                crf,  # Фактор постоянного качества
+                str(settings["crf"]),
                 "-preset",
-                preset,  # Пресет сжатия
+                settings["preset"],
+                "-profile:v",
+                settings["profile"],
+                "-level",
+                settings["level"],
+                "-vf",
+                settings["scale"],
                 "-c:a",
-                "aac",  # AAC кодек для аудио
+                "aac",
                 "-b:a",
-                "128k",  # Битрейт аудио
+                settings["audio_bitrate"],
+                "-threads",
+                settings["threads"],
                 "-map_metadata",
-                "0",  # Копирование метаданных
+                "0",
                 "-movflags",
-                "faststart",  # Оптимизация для стриминга
-                "-y",  # Перезапись файла если существует
+                "faststart",
+                "-y",
                 output_path,
             ]
 
-            # Запуск процесса сжатия
+            logger.info(f"Выполняем команду: {' '.join(cmd)}")
+
+            # Запускаем FFmpeg
             process = subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
             )
@@ -330,6 +287,49 @@ class VideoProcessor:
             return output_path
 
         except subprocess.SubprocessError as e:
-            raise Exception(f"Ошибка при сжатии видео {file_name}: {str(e)}")
+            logger.error(f"Ошибка при выполнении команды FFmpeg: {str(e)}")
+
+            # Пробуем резервный вариант
+            try:
+                logger.info("Пробуем запасной вариант сжатия...")
+
+                cmd = [
+                    self.ffmpeg_path,
+                    "-i",
+                    video_path,
+                    "-c:v",
+                    "libx264",
+                    "-crf",
+                    "20",
+                    "-preset",
+                    "medium",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-y",
+                    output_path,
+                ]
+
+                logger.info(f"Выполняем команду: {' '.join(cmd)}")
+
+                process = subprocess.run(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
+                )
+
+                return output_path
+
+            except subprocess.SubprocessError as e2:
+                logger.error(f"Ошибка при выполнении запасной команды: {str(e2)}")
+                stderr = (
+                    e2.stderr.decode("utf-8", errors="replace")
+                    if hasattr(e2, "stderr")
+                    else "Нет дополнительной информации"
+                )
+                logger.error(f"Вывод ошибки: {stderr}")
+                raise Exception(
+                    f"Не удалось сжать видео. Формат файла может быть несовместим."
+                )
         except Exception as e:
-            raise Exception(f"Ошибка обработки видео {file_name}: {str(e)}")
+            logger.error(f"Непредвиденная ошибка: {str(e)}")
+            raise Exception(f"Ошибка при обработке видео: {str(e)}")

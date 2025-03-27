@@ -284,7 +284,7 @@ class MainWindow(QMainWindow):
         quality_layout = QVBoxLayout()
         quality_label = QLabel("Качество сжатия:")
         self.quality_combo = QComboBox()
-        self.quality_combo.addItems(["Высокое", "Среднее", "Низкое"])
+        self.quality_combo.addItems(["Максимальное", "Высокое", "Среднее", "Низкое"])
         quality_layout.addWidget(quality_label)
         quality_layout.addWidget(self.quality_combo)
 
@@ -471,7 +471,6 @@ class MainWindow(QMainWindow):
         self.select_files_btn.setEnabled(False)
         self.clear_selection_btn.setEnabled(False)
         self.select_output_btn.setEnabled(False)
-        self.test_compress_btn.setEnabled(False)
 
         # Очищаем предыдущую статистику
         self.compression_stats = []
@@ -536,8 +535,7 @@ class MainWindow(QMainWindow):
                 time_str = "рассчитывается..."
 
         self.progress_info_label.setText(
-            f"{progress_data['processed']}/{progress_data['total']} файлов | "
-            f"Оставшееся время: {time_str}"
+            f"{progress_data['processed']}/{progress_data['total']} файлов | Оставшееся время: {time_str}"
         )
 
         # Устанавливаем цвет в зависимости от прогресса
@@ -609,7 +607,6 @@ class MainWindow(QMainWindow):
         self.select_files_btn.setEnabled(True)
         self.clear_selection_btn.setEnabled(True)
         self.select_output_btn.setEnabled(True)
-        self.test_compress_btn.setEnabled(True)
 
         # Обновление информации с более заметным индикатором завершения
         self.current_file_label.setText("✅ Сжатие завершено")
@@ -839,173 +836,152 @@ class MainWindow(QMainWindow):
         has_files = len(self.files_to_compress) > 0
         self.clear_selection_btn.setEnabled(has_files)
         self.start_btn.setEnabled(has_files)
-        self.test_compress_btn.setEnabled(has_files)
+        self.stop_btn.setEnabled(has_files)
+        self.select_files_btn.setEnabled(has_files)
+        self.select_output_btn.setEnabled(has_files)
+
+    def add_folder(self):
+        """Добавление папки с файлами для сжатия"""
+        try:
+            # Получаем путь к папке через диалог
+            folder_path = QFileDialog.getExistingDirectory(
+                self, "Выберите папку с файлами"
+            )
+
+            if not folder_path:
+                return
+
+            # Поддерживаемые расширения файлов
+            supported_extensions = {
+                ".jpg",
+                ".jpeg",
+                ".png",
+                ".heic",
+                ".mp4",
+                ".mov",
+                ".avi",
+            }
+
+            # Рекурсивно обходим папку и добавляем файлы
+            for root, _, files in os.walk(folder_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    # Проверяем расширение файла
+                    if os.path.splitext(file)[1].lower() in supported_extensions:
+                        # Получаем относительный путь для сохранения структуры папок
+                        rel_path = os.path.relpath(file_path, folder_path)
+                        if file_path not in [f[0] for f in self.files_to_compress]:
+                            self.files_to_compress.append((file_path, rel_path))
+
+            # Обновляем интерфейс
+            self.update_ui()
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Ошибка", f"Ошибка при добавлении папки: {str(e)}"
+            )
+
+    def update_ui(self):
+        """Обновление интерфейса"""
+        # Обновляем список файлов
+        self.files_list.clear()
+        for file_path, rel_path in self.files_to_compress:
+            self.files_list.addItem(rel_path)
+
+        # Обновляем доступность кнопок
+        has_files = bool(self.files_to_compress)
+        self.start_btn.setEnabled(has_files)
+        self.clear_selection_btn.setEnabled(has_files)
+        self.select_output_btn.setEnabled(has_files)
+
+    def remove_selected(self):
+        """Удаление выбранных файлов из списка"""
+        selected_items = self.files_list.selectedItems()
+        if not selected_items:
+            return
+
+        # Получаем индексы выбранных элементов
+        selected_indices = [self.files_list.row(item) for item in selected_items]
+
+        # Удаляем файлы из списка в обратном порядке
+        for index in sorted(selected_indices, reverse=True):
+            del self.files_to_compress[index]
+
+        # Обновляем интерфейс
+        self.update_ui()
+
+    def clear_files(self):
+        """Очистка списка файлов"""
+        self.files_to_compress = []
+        self.update_ui()
 
     def test_compression(self):
         """Тестирование сжатия на одном файле"""
         if not self.files_to_compress:
+            QMessageBox.warning(
+                self,
+                "Внимание",
+                "Не выбраны файлы для тестирования",
+                QMessageBox.StandardButton.Ok,
+            )
             return
 
-        # Выбираем первый файл для теста
+        # Получаем первый файл из списка
         test_file = self.files_to_compress[0]
-        file_name = os.path.basename(test_file)
-
-        # Создаем временную директорию для тестового сжатия
-        temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../temp")
-        os.makedirs(temp_dir, exist_ok=True)
-
-        # Получаем выбранный уровень качества
+        output_dir = self.output_path_label.text()
         quality_level = self.quality_combo.currentText()
 
-        # Показываем диалог с информацией
-        progress_dialog = QProgressDialog(
-            f"Тестирование сжатия файла {file_name}...", "Отмена", 0, 100, self
-        )
-        progress_dialog.setWindowTitle("Тест сжатия")
+        # Создаем диалог прогресса
+        progress_dialog = QProgressDialog("Тестирование сжатия...", None, 0, 100, self)
         progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        progress_dialog.setValue(0)
+        progress_dialog.setAutoReset(False)
+        progress_dialog.setAutoClose(False)
         progress_dialog.show()
 
-        # Создаем отдельный поток для тестового сжатия
-        test_thread = QThread()
-        test_worker = TestCompressionWorker(test_file, temp_dir, quality_level)
-        test_worker.moveToThread(test_thread)
-
-        # Соединяем сигналы
-        test_thread.started.connect(test_worker.run)
-        test_worker.progress_updated.connect(progress_dialog.setValue)
-        test_worker.finished.connect(
-            lambda result: self._show_test_results(result, progress_dialog)
+        # Создаем и запускаем тестовый поток
+        self.test_worker = TestCompressionWorker(test_file, output_dir, quality_level)
+        self.test_worker.progress_updated.connect(progress_dialog.setValue)
+        self.test_worker.finished.connect(
+            lambda result: self.on_test_finished(result, progress_dialog)
         )
-        test_worker.finished.connect(test_thread.quit)
-        test_worker.finished.connect(test_worker.deleteLater)
-        test_thread.finished.connect(test_thread.deleteLater)
+        self.test_worker.run()
 
-        # Запускаем тестовое сжатие
-        test_thread.start()
-
-    def _show_test_results(self, result, progress_dialog):
-        """Показать результаты тестового сжатия"""
+    def on_test_finished(self, result, progress_dialog):
+        """Обработка завершения тестового сжатия"""
         progress_dialog.close()
 
-        if not result or "error" in result:
-            error_msg = (
-                result.get("error", "Неизвестная ошибка")
-                if result
-                else "Неизвестная ошибка"
-            )
+        if "error" in result:
             QMessageBox.critical(
-                self, "Ошибка тестирования", f"Произошла ошибка: {error_msg}"
+                self,
+                "Ошибка тестирования",
+                f"Произошла ошибка при тестировании: {result['error']}",
+                QMessageBox.StandardButton.Ok,
             )
             return
 
-        # Показываем результаты сжатия
-        original_path = result["original_path"]
-        compressed_path = result["compressed_path"]
-        original_size = result["original_size"]
-        compressed_size = result["compressed_size"]
-        ratio = result["ratio"]
+        # Формируем сообщение с результатами
+        ratio_percent = result["ratio"] * 100
+        if ratio_percent > 0:
+            message = (
+                f"Тестирование завершено успешно.\n\n"
+                f"Исходный размер: {result['original_size_str']}\n"
+                f"Размер после сжатия: {result['compressed_size_str']}\n"
+                f"Уменьшение размера: {ratio_percent:.1f}%\n\n"
+                f"Качество сжатия: {result['quality_level']}"
+            )
+        else:
+            message = (
+                f"Тестирование завершено.\n\n"
+                f"Исходный размер: {result['original_size_str']}\n"
+                f"Размер после сжатия: {result['compressed_size_str']}\n"
+                f"Увеличение размера: {abs(ratio_percent):.1f}%\n\n"
+                f"Качество сжатия: {result['quality_level']}\n"
+                f"Рекомендуется использовать более низкое качество."
+            )
 
-        # Создаем форму для сравнения результатов
-        compare_dialog = QDialog(self)
-        compare_dialog.setWindowTitle("Результаты тестового сжатия")
-        compare_dialog.setMinimumSize(800, 600)
-
-        layout = QVBoxLayout()
-
-        # Информация о сжатии
-        ratio_percent = ratio * 100
-        sign = "-" if ratio > 0 else "+"
-        abs_ratio = abs(ratio_percent)
-
-        info_label = QLabel(
-            f"<h3>Результаты тестового сжатия:</h3>"
-            f"<p>Файл: {os.path.basename(original_path)}</p>"
-            f"<p>Исходный размер: {result['original_size_str']}</p>"
-            f"<p>Размер после сжатия: {result['compressed_size_str']}</p>"
-            f"<p>Изменение размера: <b>{sign}{abs_ratio:.1f}%</b></p>"
-            f"<p>Качество сжатия: {result['quality_level']}</p>"
+        QMessageBox.information(
+            self,
+            "Результаты тестирования",
+            message,
+            QMessageBox.StandardButton.Ok,
         )
-        layout.addWidget(info_label)
-
-        # Контейнер для изображений
-        images_layout = QHBoxLayout()
-
-        # Создаем виджеты для отображения оригинального и сжатого изображений
-        original_label = QLabel("Оригинал:")
-        compressed_label = QLabel("Сжатое:")
-
-        # Загружаем изображения
-        original_pixmap = QPixmap(original_path)
-        compressed_pixmap = QPixmap(compressed_path)
-
-        # Масштабируем для отображения
-        max_width = 350
-        if not original_pixmap.isNull() and original_pixmap.width() > max_width:
-            original_pixmap = original_pixmap.scaledToWidth(max_width)
-
-        if not compressed_pixmap.isNull() and compressed_pixmap.width() > max_width:
-            compressed_pixmap = compressed_pixmap.scaledToWidth(max_width)
-
-        # Создаем QLabel для отображения изображений
-        original_image = QLabel()
-        original_image.setPixmap(original_pixmap)
-        original_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        compressed_image = QLabel()
-        compressed_image.setPixmap(compressed_pixmap)
-        compressed_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # Добавляем в layouts
-        original_container = QVBoxLayout()
-        original_container.addWidget(original_label)
-        original_container.addWidget(original_image)
-
-        compressed_container = QVBoxLayout()
-        compressed_container.addWidget(compressed_label)
-        compressed_container.addWidget(compressed_image)
-
-        images_layout.addLayout(original_container)
-        images_layout.addLayout(compressed_container)
-
-        layout.addLayout(images_layout)
-
-        # Кнопки
-        buttons_layout = QHBoxLayout()
-
-        # Кнопка открытия оригинала
-        open_original_btn = QPushButton("Открыть оригинал")
-        open_original_btn.clicked.connect(lambda: self._open_file(original_path))
-
-        # Кнопка открытия сжатого
-        open_compressed_btn = QPushButton("Открыть сжатое")
-        open_compressed_btn.clicked.connect(lambda: self._open_file(compressed_path))
-
-        # Кнопка закрытия
-        close_btn = QPushButton("Закрыть")
-        close_btn.clicked.connect(compare_dialog.accept)
-
-        buttons_layout.addWidget(open_original_btn)
-        buttons_layout.addWidget(open_compressed_btn)
-        buttons_layout.addWidget(close_btn)
-
-        layout.addLayout(buttons_layout)
-
-        compare_dialog.setLayout(layout)
-        compare_dialog.exec()
-
-    def _open_file(self, file_path):
-        """Открыть файл в программе по умолчанию"""
-        import platform
-        import subprocess
-
-        try:
-            if platform.system() == "Windows":
-                os.startfile(file_path)
-            elif platform.system() == "Darwin":  # macOS
-                subprocess.run(["open", file_path], check=True)
-            else:  # Linux
-                subprocess.run(["xdg-open", file_path], check=True)
-        except Exception as e:
-            logger.error(f"Ошибка при открытии файла: {str(e)}")
-            QMessageBox.warning(self, "Ошибка", f"Не удалось открыть файл: {str(e)}")

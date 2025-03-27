@@ -16,7 +16,7 @@ class Settings:
         # Настройки по умолчанию
         self.default_settings = {
             "output_dir": str(Path.home() / "Downloads" / "Squeezer"),
-            "quality_level": "Высокое",
+            "quality_level": "Максимальное",
             "preserve_metadata": True,
             "recent_folders": [],
         }

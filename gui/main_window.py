@@ -50,111 +50,144 @@ class CompressionThread(QThread):
         self.stopped = False
 
     def run(self):
-        """Запуск процесса сжатия"""
         total_files = len(self.files)
-        processed = 0
-        start_time = time.time()
+        processed_files = 0
         total_original_size = 0
         total_compressed_size = 0
         failed_files = []
 
-        for file_path in self.files:
+        # Статистика для каждого файла
+        file_stats = []
+
+        # Отправляем начальное обновление прогресса
+        self.progress_update.emit(
+            {
+                "file": "",
+                "total": total_files,
+                "processed": processed_files,
+                "percent": 0,
+                "remaining_time": None,
+            }
+        )
+
+        start_time = time.time()
+
+        for file_info in self.files:
             if self.stopped:
                 break
 
+            if isinstance(file_info, tuple):
+                file_path, rel_path = file_info
+            else:
+                file_path = file_info
+                rel_path = os.path.basename(file_path)
+
             try:
-                # Информация о прогрессе
-                processed += 1
-                elapsed = time.time() - start_time
-
-                if processed > 1:
-                    estimated_total = (elapsed / processed) * total_files
-                    remaining = estimated_total - elapsed
-                else:
-                    remaining = 0
-
-                file_name = os.path.basename(file_path)
-
-                # Обновление UI
+                # Обновляем информацию о текущем файле
                 self.progress_update.emit(
                     {
-                        "current_file": file_name,
-                        "processed": processed,
+                        "file": rel_path,
                         "total": total_files,
-                        "percent": int(processed / total_files * 100),
-                        "remaining_time": remaining,
+                        "processed": processed_files,
+                        "percent": int(processed_files / total_files * 100),
+                        "remaining_time": self._estimate_remaining_time(
+                            start_time, processed_files, total_files
+                        ),
                     }
                 )
 
-                # Получаем размер исходного файла
+                # Получаем оригинальный размер файла
                 original_size = os.path.getsize(file_path)
                 total_original_size += original_size
 
-                # Сжатие файла
-                output_path = self.manager.compress_file(
-                    file_path, self.output_dir, self.quality_level
+                # Создаем директорию для сохранения файла с учетом структуры подпапок
+                output_subdir = os.path.dirname(os.path.join(self.output_dir, rel_path))
+                if output_subdir and not os.path.exists(output_subdir):
+                    os.makedirs(output_subdir, exist_ok=True)
+
+                # Выполняем сжатие файла
+                compressed_file = self.manager.compress_file(
+                    file_path, output_subdir, self.quality_level
                 )
 
                 # Получаем размер сжатого файла
-                if os.path.exists(output_path):
-                    compressed_size = os.path.getsize(output_path)
-                    total_compressed_size += compressed_size
+                compressed_size = os.path.getsize(compressed_file)
+                total_compressed_size += compressed_size
 
-                    # Отправляем информацию о файле
-                    self.file_processed.emit(
-                        {
-                            "file_name": file_name,
-                            "original_size": original_size,
-                            "compressed_size": compressed_size,
-                            "original_size_str": format_size(original_size),
-                            "compressed_size_str": format_size(compressed_size),
-                            "ratio": (
-                                (original_size - compressed_size) / original_size
-                                if original_size > 0
-                                else 0
-                            ),
-                        }
-                    )
-
-            except Exception as e:
-                # Записываем ошибку в лог
-                logger.error(f"Ошибка при обработке файла {file_name}: {str(e)}")
-                failed_files.append((file_name, str(e)))
-                # Отправляем сигнал об ошибке, но продолжаем обработку
-                self.error_occurred.emit(
-                    f"Ошибка при обработке файла {file_name}: {str(e)}"
+                # Рассчитываем процент изменения размера
+                size_change_percent = (
+                    (original_size - compressed_size) / original_size * 100
+                    if original_size > 0
+                    else 0
                 )
 
-        # Если были ошибки, показываем итоговое сообщение об ошибках
-        if failed_files:
-            error_message = "Следующие файлы не удалось обработать:\n\n"
-            for file_name, error in failed_files:
-                error_message += f"• {file_name}: {error}\n"
-            self.error_occurred.emit(error_message)
-
-        # Отправляем общую информацию о сжатии
-        if total_original_size > 0:
-            self.file_processed.emit(
-                {
-                    "file_name": "SUMMARY",
-                    "original_size": total_original_size,
-                    "compressed_size": total_compressed_size,
-                    "original_size_str": format_size(total_original_size),
-                    "compressed_size_str": format_size(total_compressed_size),
-                    "ratio": (
-                        (total_original_size - total_compressed_size)
-                        / total_original_size
-                        if total_original_size > 0
-                        else 0
-                    ),
+                # Обновляем статистику
+                file_stat = {
+                    "file": rel_path,
+                    "original_size": original_size,
+                    "compressed_size": compressed_size,
+                    "change_percent": size_change_percent,
                 }
-            )
+                file_stats.append(file_stat)
+
+                # Отправляем сигнал с информацией о сжатом файле
+                self.file_processed.emit(file_stat)
+
+            except Exception as e:
+                error_message = f"Ошибка при обработке файла {rel_path}: {str(e)}"
+                failed_files.append((rel_path, str(e)))
+                self.error_occurred.emit(error_message)
+
+            finally:
+                processed_files += 1
+
+                # Обновляем прогресс
+                progress_percent = int(processed_files / total_files * 100)
+                remaining_time = self._estimate_remaining_time(
+                    start_time, processed_files, total_files
+                )
+
+                self.progress_update.emit(
+                    {
+                        "file": rel_path,
+                        "total": total_files,
+                        "processed": processed_files,
+                        "percent": progress_percent,
+                        "remaining_time": remaining_time,
+                    }
+                )
+
+        # Отправляем информацию о завершении сжатия
+        if failed_files:
+            error_msg = "Следующие файлы не удалось обработать:\n\n"
+            for file_name, error in failed_files:
+                error_msg += f"• {file_name}: {error}\n\n"
+            self.error_occurred.emit(error_msg)
+
+        # Отправляем финальное обновление прогресса
+        self.progress_update.emit(
+            {
+                "file": "",
+                "total": total_files,
+                "processed": processed_files,
+                "percent": 100,
+                "remaining_time": 0,
+            }
+        )
 
         self.compression_finished.emit()
 
     def stop(self):
         """Остановка процесса сжатия"""
         self.stopped = True
+
+    def _estimate_remaining_time(self, start_time, processed_files, total_files):
+        if processed_files == 0:
+            return None
+        elapsed = time.time() - start_time
+        estimated_total = (elapsed / processed_files) * total_files
+        remaining = estimated_total - elapsed
+        return remaining
 
 
 class TestCompressionWorker(QObject):
@@ -255,6 +288,8 @@ class MainWindow(QMainWindow):
         buttons_layout = QHBoxLayout()
         self.select_files_btn = QPushButton("Выбрать файлы")
         self.select_files_btn.clicked.connect(self.select_files)
+        self.select_folder_btn = QPushButton("Выбрать папку")
+        self.select_folder_btn.clicked.connect(self.select_folder)
         self.clear_selection_btn = QPushButton("Очистить выбор")
         self.clear_selection_btn.clicked.connect(self.clear_selection)
         self.clear_selection_btn.setEnabled(False)
@@ -265,6 +300,7 @@ class MainWindow(QMainWindow):
         self.test_compress_btn.setEnabled(False)
 
         buttons_layout.addWidget(self.select_files_btn)
+        buttons_layout.addWidget(self.select_folder_btn)
         buttons_layout.addWidget(self.clear_selection_btn)
         buttons_layout.addWidget(self.test_compress_btn)
         files_layout.addLayout(buttons_layout)
@@ -341,50 +377,94 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(control_layout)
 
     def select_files(self):
-        """Выбор отдельных файлов для сжатия"""
+        """Выбор файлов для сжатия"""
+        # Определяем поддерживаемые форматы
+        image_extensions = [".jpg", ".jpeg", ".png", ".gif", ".heic"]
+        video_extensions = [".mp4", ".mov", ".avi"]
+        supported_extensions = image_extensions + video_extensions
+
+        # Формируем строку фильтра для диалога выбора файлов
+        filter_str = "Все поддерживаемые файлы ("
+        for ext in supported_extensions:
+            filter_str += f"*{ext} "
+        filter_str = filter_str.strip() + ");;"
+
+        filter_str += "Изображения ("
+        for ext in image_extensions:
+            filter_str += f"*{ext} "
+        filter_str = filter_str.strip() + ");;"
+
+        filter_str += "Видео ("
+        for ext in video_extensions:
+            filter_str += f"*{ext} "
+        filter_str = filter_str.strip() + ");;"
+
+        filter_str += "Все файлы (*.*)"
+
+        # Показываем диалог выбора файлов
         files, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Выберите файлы для сжатия",
-            str(Path.home()),
-            "Медиафайлы (*.jpg *.jpeg *.png *.gif *.mp4 *.mov *.avi *.heic)",
+            self, "Выбор файлов для сжатия", "", filter_str
         )
 
         if files:
-            # Проверка на HEIC файлы и предупреждение
-            heic_files = [f for f in files if os.path.splitext(f)[1].lower() == ".heic"]
-            if heic_files:
-                reply = QMessageBox.information(
-                    self,
-                    "Обнаружены HEIC файлы",
-                    "Добавлены файлы формата HEIC. Учтите, что HEIC уже имеет высокую степень сжатия, "
-                    "и конвертация в JPEG может не всегда уменьшить размер файла.\n\n"
-                    "Рекомендуется выбирать среднее или низкое качество при обработке HEIC файлов.",
-                    QMessageBox.StandardButton.Ok,
-                )
-
             self.add_files(files)
 
     def select_folder(self):
         """Выбор папки с файлами для сжатия"""
         folder = QFileDialog.getExistingDirectory(
-            self, "Выберите папку с файлами для сжатия", str(Path.home())
+            self, "Выбор папки с файлами для сжатия", ""
         )
 
         if folder:
-            self.add_folder_files(folder)
+            self.add_folder(folder)
 
-    def add_folder_files(self, folder_path):
-        """Добавление всех подходящих файлов из папки"""
-        extensions = [".jpg", ".jpeg", ".png", ".gif", ".mp4", ".mov", ".avi", ".heic"]
+    def add_folder(self, folder_path):
+        """Добавление всех файлов из папки и подпапок с сохранением структуры"""
+        # Определяем поддерживаемые форматы
+        image_extensions = [".jpg", ".jpeg", ".png", ".gif", ".heic"]
+        video_extensions = [".mp4", ".mov", ".avi"]
+        supported_extensions = image_extensions + video_extensions
 
-        files = []
-        for root, _, filenames in os.walk(folder_path):
-            for filename in filenames:
-                ext = os.path.splitext(filename)[1].lower()
-                if ext in extensions:
-                    files.append(os.path.join(root, filename))
+        base_folder = os.path.normpath(folder_path)
+        files_added = 0
 
-        self.add_files(files)
+        # Рекурсивно обходим все подпапки
+        for root, _, files in os.walk(folder_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                ext = os.path.splitext(file_path)[1].lower()
+
+                # Если расширение поддерживается, добавляем файл
+                if ext in supported_extensions:
+                    # Сохраняем относительный путь от базовой папки
+                    rel_path = os.path.relpath(file_path, base_folder)
+
+                    # Добавляем кортеж (полный путь, относительный путь)
+                    if (file_path, rel_path) not in self.files_to_compress:
+                        self.files_to_compress.append((file_path, rel_path))
+                        self.files_list.addItem(rel_path)
+                        files_added += 1
+
+        # Обновляем интерфейс
+        self.clear_selection_btn.setEnabled(True)
+        self.test_compress_btn.setEnabled(bool(self.files_to_compress))
+        self.start_btn.setEnabled(True)
+
+        # Сообщаем пользователю о количестве добавленных файлов
+        if files_added > 0:
+            QMessageBox.information(
+                self,
+                "Файлы добавлены",
+                f"Добавлено {files_added} файлов из папки {folder_path}",
+                QMessageBox.StandardButton.Ok,
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Нет подходящих файлов",
+                f"В папке {folder_path} не найдено поддерживаемых файлов.",
+                QMessageBox.StandardButton.Ok,
+            )
 
     def add_files(self, files):
         """Добавление файлов в список для сжатия"""
@@ -398,9 +478,11 @@ class MainWindow(QMainWindow):
         for file_path in files:
             ext = os.path.splitext(file_path)[1].lower()
             if ext in supported_extensions:
-                if file_path not in self.files_to_compress:
-                    self.files_to_compress.append(file_path)
-                    self.files_list.addItem(os.path.basename(file_path))
+                # Используем кортеж (полный путь, имя файла), чтобы сохранить структуру
+                file_name = os.path.basename(file_path)
+                if (file_path, file_name) not in self.files_to_compress:
+                    self.files_to_compress.append((file_path, file_name))
+                    self.files_list.addItem(file_name)
             else:
                 unsupported_files.append(os.path.basename(file_path))
 
@@ -426,7 +508,9 @@ class MainWindow(QMainWindow):
             warning_dialog.exec()
 
         # Обновляем состояние кнопок
-        self.update_file_list()
+        self.clear_selection_btn.setEnabled(bool(self.files_to_compress))
+        self.test_compress_btn.setEnabled(bool(self.files_to_compress))
+        self.start_btn.setEnabled(bool(self.files_to_compress))
 
     def clear_selection(self):
         """Очистка списка выбранных файлов"""
@@ -469,15 +553,19 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.select_files_btn.setEnabled(False)
+        self.select_folder_btn.setEnabled(False)
         self.clear_selection_btn.setEnabled(False)
         self.select_output_btn.setEnabled(False)
 
         # Очищаем предыдущую статистику
         self.compression_stats = []
 
+        # Извлекаем пути к файлам для CompressionThread
+        file_infos = self.files_to_compress
+
         # Запуск потока сжатия
         self.compression_thread = CompressionThread(
-            self.files_to_compress, output_dir, quality_level
+            file_infos, output_dir, quality_level
         )
         self.compression_thread.progress_update.connect(self.update_progress)
         self.compression_thread.compression_finished.connect(
@@ -509,10 +597,10 @@ class MainWindow(QMainWindow):
 
     def update_progress(self, progress_data):
         """Обновление информации о прогрессе сжатия"""
-        self.current_file_label.setText(f"Обработка: {progress_data['current_file']}")
+        self.current_file_label.setText(f"Обработка: {progress_data['file']}")
 
         # Подсветка HEIC файлов особым цветом
-        current_file = progress_data["current_file"]
+        current_file = progress_data["file"]
         if os.path.splitext(current_file)[1].lower() == ".heic":
             self.current_file_label.setText(f"Обработка HEIC: {current_file}")
 
@@ -557,27 +645,30 @@ class MainWindow(QMainWindow):
 
     def on_file_processed(self, file_data):
         """Обработка информации о завершенном файле"""
-        if file_data["file_name"] != "SUMMARY":
+        # Добавляем информацию о размерах в читаемом формате
+        file_data["original_size_str"] = format_size(file_data["original_size"])
+        file_data["compressed_size_str"] = format_size(file_data["compressed_size"])
+
+        if "file" in file_data:
             # Сохраняем статистику для отдельного файла
             self.compression_stats.append(file_data)
 
             # Логируем информацию о сжатии
-            ratio_percent = file_data["ratio"] * 100
+            ratio_percent = file_data["change_percent"]
             sign = "-" if ratio_percent > 0 else "+"
             abs_percent = abs(ratio_percent)
 
             logger.info(
-                f"Файл: {file_data['file_name']} | "
-                f"Исходный размер: {file_data['original_size_str']} | "
-                f"Размер после сжатия: {file_data['compressed_size_str']} | "
+                f"Файл: {file_data['file']} | "
+                f"Исходный размер: {format_size(file_data['original_size'])} | "
+                f"Размер после сжатия: {format_size(file_data['compressed_size'])} | "
                 f"Изменение: {sign}{abs_percent:.1f}%"
             )
 
-            # Если файл увеличился в размере, выводим предупреждение в консоль
             if ratio_percent < 0:
                 logger.warning(
-                    f"Файл {file_data['file_name']} увеличился в размере после обработки! "
-                    f"Было: {file_data['original_size_str']}, стало: {file_data['compressed_size_str']}"
+                    f"Файл {file_data['file']} увеличился в размере после обработки! "
+                    f"Было: {format_size(file_data['original_size'])}, стало: {format_size(file_data['compressed_size'])}"
                 )
         else:
             # Это итоговая статистика
@@ -605,6 +696,7 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.select_files_btn.setEnabled(True)
+        self.select_folder_btn.setEnabled(True)
         self.clear_selection_btn.setEnabled(True)
         self.select_output_btn.setEnabled(True)
 
@@ -644,11 +736,11 @@ class MainWindow(QMainWindow):
             # Добавляем детальную информацию по каждому файлу
             logger.info("\nДетальная информация по файлам:")
             for stat in self.compression_stats:
-                ratio = stat["ratio"] * 100
+                ratio = stat["change_percent"] * 100
                 sign = "-" if ratio > 0 else "+"
                 abs_ratio = abs(ratio)
                 logger.info(
-                    f"Файл: {stat['file_name']}\n"
+                    f"Файл: {stat['file']}\n"
                     f"  Исходный размер: {stat['original_size_str']}\n"
                     f"  Размер после сжатия: {stat['compressed_size_str']}\n"
                     f"  Изменение: {sign}{abs_ratio:.1f}%"
@@ -810,12 +902,12 @@ class MainWindow(QMainWindow):
         detailed_text = "Информация по отдельным файлам:\n\n"
 
         for stat in self.compression_stats:
-            ratio = stat["ratio"] * 100
+            ratio = stat["change_percent"] * 100
             sign = "-" if ratio > 0 else "+"
             abs_ratio = abs(ratio)
 
             detailed_text += (
-                f"Файл: {stat['file_name']}\n"
+                f"Файл: {stat['file']}\n"
                 f"Исходный размер: {stat['original_size_str']}\n"
                 f"Размер после сжатия: {stat['compressed_size_str']}\n"
                 f"Изменение: {sign}{abs_ratio:.1f}%\n\n"
@@ -828,9 +920,8 @@ class MainWindow(QMainWindow):
     def update_file_list(self):
         """Обновление списка файлов"""
         self.files_list.clear()
-        for file_path in self.files_to_compress:
-            file_name = os.path.basename(file_path)
-            self.files_list.addItem(file_name)
+        for file_path, rel_path in self.files_to_compress:
+            self.files_list.addItem(rel_path)
 
         # Активация/деактивация кнопок
         has_files = len(self.files_to_compress) > 0
@@ -838,60 +929,6 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(has_files)
         self.stop_btn.setEnabled(has_files)
         self.select_files_btn.setEnabled(has_files)
-        self.select_output_btn.setEnabled(has_files)
-
-    def add_folder(self):
-        """Добавление папки с файлами для сжатия"""
-        try:
-            # Получаем путь к папке через диалог
-            folder_path = QFileDialog.getExistingDirectory(
-                self, "Выберите папку с файлами"
-            )
-
-            if not folder_path:
-                return
-
-            # Поддерживаемые расширения файлов
-            supported_extensions = {
-                ".jpg",
-                ".jpeg",
-                ".png",
-                ".heic",
-                ".mp4",
-                ".mov",
-                ".avi",
-            }
-
-            # Рекурсивно обходим папку и добавляем файлы
-            for root, _, files in os.walk(folder_path):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    # Проверяем расширение файла
-                    if os.path.splitext(file)[1].lower() in supported_extensions:
-                        # Получаем относительный путь для сохранения структуры папок
-                        rel_path = os.path.relpath(file_path, folder_path)
-                        if file_path not in [f[0] for f in self.files_to_compress]:
-                            self.files_to_compress.append((file_path, rel_path))
-
-            # Обновляем интерфейс
-            self.update_ui()
-
-        except Exception as e:
-            QMessageBox.critical(
-                self, "Ошибка", f"Ошибка при добавлении папки: {str(e)}"
-            )
-
-    def update_ui(self):
-        """Обновление интерфейса"""
-        # Обновляем список файлов
-        self.files_list.clear()
-        for file_path, rel_path in self.files_to_compress:
-            self.files_list.addItem(rel_path)
-
-        # Обновляем доступность кнопок
-        has_files = bool(self.files_to_compress)
-        self.start_btn.setEnabled(has_files)
-        self.clear_selection_btn.setEnabled(has_files)
         self.select_output_btn.setEnabled(has_files)
 
     def remove_selected(self):
@@ -907,8 +944,8 @@ class MainWindow(QMainWindow):
         for index in sorted(selected_indices, reverse=True):
             del self.files_to_compress[index]
 
-        # Обновляем интерфейс
-        self.update_ui()
+        # Обновляем список файлов
+        self.update_file_list()
 
     def clear_files(self):
         """Очистка списка файлов"""
@@ -927,7 +964,13 @@ class MainWindow(QMainWindow):
             return
 
         # Получаем первый файл из списка
-        test_file = self.files_to_compress[0]
+        file_info = self.files_to_compress[0]
+        if isinstance(file_info, tuple):
+            test_file, rel_path = file_info
+        else:
+            test_file = file_info
+            rel_path = os.path.basename(test_file)
+
         output_dir = self.output_path_label.text()
         quality_level = self.quality_combo.currentText()
 

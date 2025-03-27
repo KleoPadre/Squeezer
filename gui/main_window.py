@@ -607,20 +607,22 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(progress_data["percent"])
 
         # Форматирование оставшегося времени
-        mins, secs = divmod(int(progress_data["remaining_time"]), 60)
+        remaining_time = progress_data["remaining_time"]
 
-        # Более информативное отображение оставшегося времени
-        if progress_data["remaining_time"] > 0:
+        # Проверяем, что remaining_time не None
+        if remaining_time is not None:
+            mins, secs = divmod(int(remaining_time), 60)
             time_str = f"{mins} мин {secs} сек"
         else:
-            # Если файл последний и прогресс почти завершен
-            if (
-                progress_data["processed"] == progress_data["total"]
-                and progress_data["percent"] >= 95
-            ):
-                time_str = "завершается..."
-            else:
-                time_str = "рассчитывается..."
+            # Если время не определено
+            time_str = "рассчитывается..."
+
+        # Если файл последний и прогресс почти завершен
+        if (
+            progress_data["processed"] == progress_data["total"]
+            and progress_data["percent"] >= 95
+        ):
+            time_str = "завершается..."
 
         self.progress_info_label.setText(
             f"{progress_data['processed']}/{progress_data['total']} файлов | Оставшееся время: {time_str}"
